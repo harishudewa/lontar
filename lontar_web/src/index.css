@@ -1,0 +1,62 @@
+@import 'tailwindcss';
+
+@layer base {
+    * {
+        @apply border-gray-600;
+    }
+
+    body {
+        @apply bg-gray-950 text-gray-300
+    }
+
+    .note-content {
+        h1 {
+            @apply text-3xl font-bold mb-2;
+        }
+
+        h2 {
+            @apply text-2xl font-bold mb-2;
+        }
+
+        h3 {
+            @apply text-xl font-semibold mb-2;
+        }
+
+        h4 {
+            @apply text-lg font-medium mb-2;
+        }
+
+        blockquote {
+            @apply bg-violet-100 p-2 rounded-r-md border-l-4 border-violet-500 my-2;
+        }
+
+        p {
+            @apply my-1;
+        }
+
+        ul {
+            @apply list-disc pl-4;
+        }
+
+        ol {
+            @apply list-decimal pl-4;
+        }
+
+        pre {
+            @apply p-2 rounded-md my-3;
+        }
+
+        span.shiki:has(> code:only-child) {
+            @apply px-2 py-0.5 rounded-md;
+        }
+    }
+
+
+    button {
+        @apply cursor-pointer font-medium;
+    }
+
+    input {
+        @apply outline-none;
+    }
+}

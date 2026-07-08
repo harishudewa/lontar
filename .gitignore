@@ -1,0 +1,4 @@
+/target
+.tool-versions
+.env
+.env.*

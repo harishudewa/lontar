@@ -1,0 +1,13 @@
+[package]
+name = "lontar_workers"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jwt-simple = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+worker = { version = "0.8.5", features = ["d1"] }

@@ -1,0 +1,11 @@
+name = "lontar_workers"
+main = "build/index.js"
+
+[build]
+command = "worker-build --release"
+
+[[d1_databases]]
+binding = "lontar_db"
+database_name = "lontar_db"
+database_id = "9bf26fcb-a364-4280-a822-bdb56ea74e64"
+
