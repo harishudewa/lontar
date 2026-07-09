@@ -3,6 +3,7 @@ import { Route, Router } from '@solidjs/router';
 import SignInPage from './pages/signin/page';
 import NotePage from './pages/notes/note/page';
 import NotesLayout from './pages/notes/layout';
+import VirtualList from './pages/notes/virtualist';
 
 const App: Component = () => {
     return (
@@ -10,6 +11,7 @@ const App: Component = () => {
             <Route path="/signin" component={SignInPage} />
             <Route path="/" component={NotesLayout}>
                 <Route path="/" component={NotePage} />
+                <Route path="/virtual" component={VirtualList} />
             </Route>
         </Router>
     );

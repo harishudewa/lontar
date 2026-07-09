@@ -97,29 +97,32 @@ const NotePage: Component = () => {
     };
 
     const processSyntaxTree = (tree: TreeCursor, from: number, to: number) => {
-        tree.moveTo(from);
-
-        console.log(
-            'init',
-            'name',
-            tree.name,
-            'from',
-            tree.from,
-            'to',
-            tree.to
-        );
-
-        while (tree.to < to && tree.parent()) {}
-
-        console.log(
-            'final',
-            'name',
-            tree.name,
-            'from',
-            tree.from,
-            'to',
-            tree.to
-        );
+        tree.iterate((node) => {
+            console.log('name', node.name, 'from', node.from, 'to', node.to);
+        });
+        // tree.moveTo(from);
+        //
+        // console.log(
+        //     'init',
+        //     'name',
+        //     tree.name,
+        //     'from',
+        //     tree.from,
+        //     'to',
+        //     tree.to
+        // );
+        //
+        // while (tree.to < to && tree.parent()) {}
+        //
+        // console.log(
+        //     'final',
+        //     'name',
+        //     tree.name,
+        //     'from',
+        //     tree.from,
+        //     'to',
+        //     tree.to
+        // );
     };
 
     createEffect(
@@ -179,7 +182,7 @@ const NotePage: Component = () => {
                                     // console.log('change_set', js);
                                     console.log('start', start, 'end', end);
                                     processSyntaxTree(
-                                        syntaxTree(view.startState).cursor(),
+                                        syntaxTree(view.state).cursor(),
                                         start,
                                         end
                                     );
