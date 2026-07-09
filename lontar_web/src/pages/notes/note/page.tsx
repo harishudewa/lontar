@@ -15,6 +15,10 @@ import rehypeShikiFromHighlighter from '@shikijs/rehype/core';
 import { createHighlighterCore } from 'shiki/core';
 import { createOnigurumaEngine, HighlighterGeneric } from 'shiki';
 import AuthGuard from '../../auth_guard';
+import { Text } from '@codemirror/state';
+import { markdown } from '@codemirror/lang-markdown';
+import { syntaxTree } from '@codemirror/language';
+import { TreeCursor } from '@lezer/common';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -84,6 +88,40 @@ const NotePage: Component = () => {
         }
     });
 
+    let pending: number | undefined;
+    const scheduleContentSync = (doc: Text) => {
+        if (pending) clearTimeout(pending);
+        pending = setTimeout(() => {
+            setContent(doc.toString());
+        }, 150);
+    };
+
+    const processSyntaxTree = (tree: TreeCursor, from: number, to: number) => {
+        tree.moveTo(from);
+
+        console.log(
+            'init',
+            'name',
+            tree.name,
+            'from',
+            tree.from,
+            'to',
+            tree.to
+        );
+
+        while (tree.to < to && tree.parent()) {}
+
+        console.log(
+            'final',
+            'name',
+            tree.name,
+            'from',
+            tree.from,
+            'to',
+            tree.to
+        );
+    };
+
     createEffect(
         on(
             () => displayMode(),
@@ -122,12 +160,40 @@ const NotePage: Component = () => {
                                 },
                                 { dark: true }
                             ),
+                            EditorView.updateListener.of((view) => {
+                                if (view.docChanged) {
+                                    const js: any[] = view.changes.toJSON();
+                                    let start = 0;
+                                    let end = view.state.doc.length;
+                                    if (js[0] && typeof js[0] === 'number') {
+                                        start = js[0];
+                                    }
+                                    if (js[1]) {
+                                        if (js[1].length == 2) {
+                                            end = start + js[1][1].length;
+                                        } else {
+                                            end = start;
+                                        }
+                                    }
+
+                                    // console.log('change_set', js);
+                                    console.log('start', start, 'end', end);
+                                    processSyntaxTree(
+                                        syntaxTree(view.startState).cursor(),
+                                        start,
+                                        end
+                                    );
+                                }
+                                const str = view.state.doc;
+                                scheduleContentSync(str);
+                            }),
+                            EditorView.contentAttributes.of({
+                                spellcheck: 'false',
+                                autocorrect: 'off',
+                                autocapitalize: 'off',
+                            }),
+                            markdown(),
                         ],
-                        dispatchTransactions: (tr, v) => {
-                            v.update(tr);
-                            const str = v.state.doc.toString();
-                            setContent(str);
-                        },
                     });
                     setEditorView(view);
                 }
