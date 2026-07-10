@@ -1,10 +1,5 @@
 import { history, indentWithTab } from '@codemirror/commands';
-import {
-    drawSelection,
-    EditorView,
-    lineNumbers,
-    keymap,
-} from '@codemirror/view';
+import { drawSelection, EditorView, lineNumbers, keymap } from '@codemirror/view';
 import rehypeSanitize from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
@@ -15,10 +10,10 @@ import rehypeShikiFromHighlighter from '@shikijs/rehype/core';
 import { createHighlighterCore } from 'shiki/core';
 import { createOnigurumaEngine, HighlighterGeneric } from 'shiki';
 import AuthGuard from '../../auth_guard';
-import { Text } from '@codemirror/state';
+import { EditorState, Text } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
-import { syntaxTree } from '@codemirror/language';
-import { TreeCursor } from '@lezer/common';
+import { syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { Node } from './utils';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -34,14 +29,10 @@ const parseContent = (content: string) => {
             .use(remarkParse)
             .use(remarkRehype)
             .use(rehypeSanitize)
-            .use(
-                rehypeShikiFromHighlighter,
-                highlighter as unknown as HighlighterGeneric<any, any>,
-                {
-                    theme: 'vitesse-dark',
-                    inline: 'tailing-curly-colon',
-                }
-            )
+            .use(rehypeShikiFromHighlighter, highlighter as unknown as HighlighterGeneric<any, any>, {
+                theme: 'vitesse-dark',
+                inline: 'tailing-curly-colon',
+            })
             .use(rehypeStringify)
             .processSync(content)
     );
@@ -63,11 +54,10 @@ const NotePage: Component = () => {
    1. nested
       - another one here`;
 
-    const [editorView, setEditorView] = createSignal<EditorView | undefined>(
-        undefined
-    );
+    const [editorView, setEditorView] = createSignal<EditorView | undefined>(undefined);
     const [content, setContent] = createSignal(initContent);
     const [displayMode, setDisplayMode] = createSignal<DisplayMode>('split');
+    const [currentNodes, setCurrentNodes] = createSignal<Node[]>([]);
 
     document.addEventListener('keydown', (e) => {
         if (e.ctrlKey && e.altKey) {
@@ -96,33 +86,26 @@ const NotePage: Component = () => {
         }, 150);
     };
 
-    const processSyntaxTree = (tree: TreeCursor, from: number, to: number) => {
-        tree.iterate((node) => {
-            console.log('name', node.name, 'from', node.from, 'to', node.to);
-        });
-        // tree.moveTo(from);
-        //
-        // console.log(
-        //     'init',
-        //     'name',
-        //     tree.name,
-        //     'from',
-        //     tree.from,
-        //     'to',
-        //     tree.to
-        // );
-        //
-        // while (tree.to < to && tree.parent()) {}
-        //
-        // console.log(
-        //     'final',
-        //     'name',
-        //     tree.name,
-        //     'from',
-        //     tree.from,
-        //     'to',
-        //     tree.to
-        // );
+    const processChanges = (
+        fromA: number,
+        toA: number,
+        fromB: number,
+        toB: number,
+        currState: EditorState,
+        prevState: EditorState
+    ) => {
+        console.log('====================');
+        console.log('fromA', fromA, 'toA', toA, 'fromB', fromB, 'toB', toB);
+        const currStateTree = syntaxTree(currState);
+
+        if (currentNodes().length > 0) {
+            let start = 0,
+                end = currentNodes().length;
+
+            while (start < end) {
+                i;
+            }
+        }
     };
 
     createEffect(
@@ -151,10 +134,9 @@ const NotePage: Component = () => {
                                     '&.cm-focused .cm-cursor': {
                                         borderLeftColor: '#0e9',
                                     },
-                                    '&.cm-focused .cm-selectionBackground, ::selection':
-                                        {
-                                            backgroundColor: '#074',
-                                        },
+                                    '&.cm-focused .cm-selectionBackground, ::selection': {
+                                        backgroundColor: '#074',
+                                    },
                                     '.cm-gutters': {
                                         backgroundColor: '#353535',
                                         color: '#ddd',
@@ -165,28 +147,11 @@ const NotePage: Component = () => {
                             ),
                             EditorView.updateListener.of((view) => {
                                 if (view.docChanged) {
-                                    const js: any[] = view.changes.toJSON();
-                                    let start = 0;
-                                    let end = view.state.doc.length;
-                                    if (js[0] && typeof js[0] === 'number') {
-                                        start = js[0];
-                                    }
-                                    if (js[1]) {
-                                        if (js[1].length == 2) {
-                                            end = start + js[1][1].length;
-                                        } else {
-                                            end = start;
-                                        }
-                                    }
-
-                                    // console.log('change_set', js);
-                                    console.log('start', start, 'end', end);
-                                    processSyntaxTree(
-                                        syntaxTree(view.state).cursor(),
-                                        start,
-                                        end
-                                    );
+                                    view.changes.iterChanges((fromA, toA, fromB, toB) => {
+                                        processChanges(fromA, toA, fromB, toB, view.state, view.startState);
+                                    });
                                 }
+
                                 const str = view.state.doc;
                                 scheduleContentSync(str);
                             }),
@@ -207,21 +172,10 @@ const NotePage: Component = () => {
     return (
         <AuthGuard>
             <div class="flex w-full mx-auto flex-1">
-                <Show
-                    when={
-                        displayMode() === 'write' || displayMode() === 'split'
-                    }
-                >
-                    <div
-                        id="editor"
-                        class="w-full flex-1 p-4 pb-40 border-r h-[calc(100vh-2.5rem)] overflow-auto"
-                    />
+                <Show when={displayMode() === 'write' || displayMode() === 'split'}>
+                    <div id="editor" class="w-full flex-1 p-4 pb-40 border-r h-[calc(100vh-2.5rem)] overflow-auto" />
                 </Show>
-                <Show
-                    when={
-                        displayMode() === 'preview' || displayMode() === 'split'
-                    }
-                >
+                <Show when={displayMode() === 'preview' || displayMode() === 'split'}>
                     <div
                         class="w-full flex-1 p-4 pb-40 h-[calc(100vh-2.5rem)] overflow-auto note-content"
                         innerHTML={parseContent(content())}
