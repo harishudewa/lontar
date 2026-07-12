@@ -4,16 +4,18 @@ import rehypeSanitize from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
-import { createEffect, createSignal, on, Show, type Component } from 'solid-js';
+import { createEffect, createSignal, For, on, Show, type Component } from 'solid-js';
 import { unified } from 'unified';
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core';
 import { createHighlighterCore } from 'shiki/core';
 import { createOnigurumaEngine, HighlighterGeneric } from 'shiki';
 import AuthGuard from '../../auth_guard';
-import { EditorState, Text } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
-import { syntaxHighlighting, syntaxTree } from '@codemirror/language';
-import { Node } from './utils';
+import { syntaxTree } from '@codemirror/language';
+import { TreeCursor } from '@lezer/common';
+import { Dynamic } from 'solid-js/web';
+import { hashKey } from '../../../lib/util';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -39,7 +41,7 @@ const parseContent = (content: string) => {
 };
 
 const NotePage: Component = () => {
-    const initContent = `# Heading 1
+    let content = `# Heading 1
 ## Heading 2
 ### Heading 3
 #### Heading 4
@@ -55,14 +57,16 @@ const NotePage: Component = () => {
       - another one here`;
 
     const [editorView, setEditorView] = createSignal<EditorView | undefined>(undefined);
-    const [content, setContent] = createSignal(initContent);
     const [displayMode, setDisplayMode] = createSignal<DisplayMode>('split');
-    const [currentNodes, setCurrentNodes] = createSignal<Node[]>([]);
+    const [currentNodes, setCurrentNodes] = createSignal<Component[]>([]);
+    let prevComponents = new Map<string, number[]>();
+    let currComponents = new Map<string, number[]>();
 
     document.addEventListener('keydown', (e) => {
         if (e.ctrlKey && e.altKey) {
             switch (e.key) {
                 case '1': {
+                    content = editorView()?.state.doc.toString() || '';
                     setDisplayMode('write');
                     break;
                 }
@@ -71,6 +75,7 @@ const NotePage: Component = () => {
                     break;
                 }
                 case '3': {
+                    content = editorView()?.state.doc.toString() || '';
                     setDisplayMode('split');
                     break;
                 }
@@ -78,34 +83,45 @@ const NotePage: Component = () => {
         }
     });
 
-    let pending: number | undefined;
-    const scheduleContentSync = (doc: Text) => {
-        if (pending) clearTimeout(pending);
-        pending = setTimeout(() => {
-            setContent(doc.toString());
-        }, 150);
-    };
-
-    const processChanges = (
-        fromA: number,
-        toA: number,
-        fromB: number,
-        toB: number,
-        currState: EditorState,
-        prevState: EditorState
-    ) => {
-        console.log('====================');
-        console.log('fromA', fromA, 'toA', toA, 'fromB', fromB, 'toB', toB);
+    const processChanges = (currState: EditorState) => {
         const currStateTree = syntaxTree(currState);
 
-        if (currentNodes().length > 0) {
-            let start = 0,
-                end = currentNodes().length;
+        const newNodes: Component[] = [];
+        const cursor = currStateTree.cursor();
+        let ok = cursor.firstChild();
 
-            while (start < end) {
-                i;
+        let idx = 0;
+        while (ok) {
+            const name = cursor.node.name,
+                from = cursor.node.from,
+                to = cursor.node.to;
+            const key = hashKey(`${name}:${currState.doc.sliceString(from, to + 1)}`);
+
+            const prevComponentIndexes = prevComponents.get(key) || [];
+            if (prevComponentIndexes.length > 0) {
+                const i = prevComponentIndexes.shift() as number;
+                newNodes.push(currentNodes()[i]);
+                currComponents.set(key, [...(currComponents.get(key) || []), idx]);
+            } else {
+                newNodes.push(processComponent(cursor, key, idx, currState));
             }
+
+            ok = cursor.nextSibling();
+            idx += 1;
         }
+
+        prevComponents = currComponents;
+        currComponents = new Map();
+        setCurrentNodes(newNodes);
+    };
+
+    const processComponent = (cursor: TreeCursor, key: string, idx: number, state: EditorState) => {
+        currComponents.set(key, [...(currComponents.get(key) || []), idx]);
+        const text = state.doc.sliceString(cursor.node.from, cursor.node.to);
+        const RenderComponent: Component = () => {
+            return <div innerHTML={parseContent(text)}></div>;
+        };
+        return RenderComponent;
     };
 
     createEffect(
@@ -114,7 +130,7 @@ const NotePage: Component = () => {
             (_, prevDisplayMode) => {
                 if (!editorView() || prevDisplayMode === 'preview') {
                     const view = new EditorView({
-                        doc: content(),
+                        doc: content,
                         parent: document.querySelector('#editor') || undefined,
                         extensions: [
                             lineNumbers(),
@@ -146,14 +162,9 @@ const NotePage: Component = () => {
                                 { dark: true }
                             ),
                             EditorView.updateListener.of((view) => {
-                                if (view.docChanged) {
-                                    view.changes.iterChanges((fromA, toA, fromB, toB) => {
-                                        processChanges(fromA, toA, fromB, toB, view.state, view.startState);
-                                    });
+                                if (view.docChanged || currentNodes().length === 0) {
+                                    processChanges(view.state);
                                 }
-
-                                const str = view.state.doc;
-                                scheduleContentSync(str);
                             }),
                             EditorView.contentAttributes.of({
                                 spellcheck: 'false',
@@ -176,10 +187,9 @@ const NotePage: Component = () => {
                     <div id="editor" class="w-full flex-1 p-4 pb-40 border-r h-[calc(100vh-2.5rem)] overflow-auto" />
                 </Show>
                 <Show when={displayMode() === 'preview' || displayMode() === 'split'}>
-                    <div
-                        class="w-full flex-1 p-4 pb-40 h-[calc(100vh-2.5rem)] overflow-auto note-content"
-                        innerHTML={parseContent(content())}
-                    />
+                    <div class="w-full flex-1 p-4 pb-40 h-[calc(100vh-2.5rem)] overflow-auto note-content">
+                        <For each={currentNodes()}>{(el) => <Dynamic component={el} />}</For>
+                    </div>
                 </Show>
             </div>
         </AuthGuard>

@@ -49,3 +49,16 @@ export const $fetch = createFetch({
     baseURL: 'http://localhost:8787',
     schema: FetchSchema,
 });
+
+export const fnv1a32 = (str: string, seed: number) => {
+    let h = seed;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(36);
+};
+
+export const hashKey = (str: string) => {
+    return fnv1a32(str, 0x811c9dc5) + fnv1a32(str, 0x9e3779b9);
+};
