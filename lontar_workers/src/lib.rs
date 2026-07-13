@@ -1,13 +1,17 @@
+use std::collections::HashMap;
+
 use jwt_simple::prelude::Ed25519KeyPair;
 use serde::{Deserialize, Serialize};
-use worker::{Context, Env, Request, Response, RouteContext, Router, event};
+use worker::{Context, Env, Headers, HttpMetadata, Request, Response, RouteContext, Router, event};
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
     let res = Router::new()
         .get_async("/", async move |_req, _ctx| Response::from_html("Hello"))
         .get_async("/gen-key", gen_key)
+        .get_async("/image", image_get)
         .post_async("/signin", signin)
+        .post_async("/image", image_upload)
         .run(req, env)
         .await?;
     Ok(res)
@@ -33,4 +37,46 @@ pub async fn gen_key(_req: Request, _ctx: RouteContext<()>) -> worker::Result<Re
     let key_pair_str = key_pair.to_pem();
 
     Response::from_html(key_pair_str)
+}
+
+pub async fn image_upload(req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let bucket = ctx.env.bucket("lontar_bucket")?;
+    let stream = req.inner().body().unwrap();
+
+    let mut custom_metadata = HashMap::new();
+    custom_metadata.insert(String::from("enc-alg"), String::from("XChaCha20Poly-1305"));
+    custom_metadata.insert(String::from("nonce-len"), String::from("24"));
+
+    let obj = bucket
+        .put("testing2.jpg", stream)
+        .http_metadata(HttpMetadata {
+            content_type: Some(String::from("application/octet-stream")),
+            ..Default::default()
+        })
+        .custom_metadata(custom_metadata)
+        .execute()
+        .await?;
+    let obj = obj.unwrap();
+
+    Response::from_html(obj.key())
+}
+
+pub async fn image_get(_req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let bucket = ctx.env.bucket("lontar_bucket")?;
+    let obj = bucket.get("testing2.jpg").execute().await?.unwrap();
+
+    let body = match obj.body() {
+        Some(body) => body,
+        None => return Response::error("Object has no body", 500),
+    };
+
+    // Streams the object straight through to the client without
+    // consuming Worker CPU time while it streams.
+    let response_body = body.response_body()?;
+
+    let headers = Headers::new();
+    headers.set("Content-Type", "image/jpeg")?;
+    headers.set("Cache-Control", "public, max-age=31536000")?;
+
+    Ok(Response::from_body(response_body)?.with_headers(headers))
 }

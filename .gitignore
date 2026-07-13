@@ -2,3 +2,4 @@
 .tool-versions
 .env
 .env.*
+.DS_Store

@@ -49,6 +49,20 @@
         span.shiki:has(> code:only-child) {
             @apply px-2 py-0.5 rounded-md;
         }
+
+        table {
+            @apply border-collapse;
+
+            td,
+            th {
+                @apply p-2 border;
+            }
+
+            th {
+                @apply bg-zinc-800;
+            }
+        }
+
     }
 
 

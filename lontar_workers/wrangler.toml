@@ -9,3 +9,6 @@ binding = "lontar_db"
 database_name = "lontar_db"
 database_id = "9bf26fcb-a364-4280-a822-bdb56ea74e64"
 
+[[r2_buckets]]
+binding = "lontar_bucket"
+bucket_name = "lontar-bucket"

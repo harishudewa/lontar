@@ -16,6 +16,7 @@ import { syntaxTree } from '@codemirror/language';
 import { TreeCursor } from '@lezer/common';
 import { Dynamic } from 'solid-js/web';
 import { hashKey } from '../../../lib/util';
+import remarkGfm from 'remark-gfm';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -29,6 +30,7 @@ const parseContent = (content: string) => {
     return String(
         unified()
             .use(remarkParse)
+            .use(remarkGfm)
             .use(remarkRehype)
             .use(rehypeSanitize)
             .use(rehypeShikiFromHighlighter, highlighter as unknown as HighlighterGeneric<any, any>, {
@@ -124,6 +126,32 @@ const NotePage: Component = () => {
         return RenderComponent;
     };
 
+    const handlePaste = (event: ClipboardEvent, view: EditorView) => {
+        const files = event.clipboardData?.files;
+
+        if (files && files.length > 0) {
+            const imagePlaceholder = '<!-- Uploading image -->';
+            const loadingText = `\n${imagePlaceholder}\n`;
+            view.dispatch(view.state.replaceSelection(loadingText));
+
+            new Promise((resolve) => {
+                setTimeout(() => {
+                    resolve(0);
+                    const placeholderIndex = view.state.doc.toString().indexOf(imagePlaceholder);
+                    if (placeholderIndex != -1) {
+                        view.dispatch({
+                            changes: {
+                                from: placeholderIndex,
+                                to: placeholderIndex + imagePlaceholder.length,
+                                insert: 'Image uploaded.',
+                            },
+                        });
+                    }
+                }, 2000);
+            });
+        }
+    };
+
     createEffect(
         on(
             () => displayMode(),
@@ -161,6 +189,9 @@ const NotePage: Component = () => {
                                 },
                                 { dark: true }
                             ),
+                            EditorView.domEventHandlers({
+                                paste: handlePaste,
+                            }),
                             EditorView.updateListener.of((view) => {
                                 if (view.docChanged || currentNodes().length === 0) {
                                     processChanges(view.state);

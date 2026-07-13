@@ -10,4 +10,5 @@ crate-type = ["cdylib"]
 jwt-simple = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+time = { version = "0.3", features = ["wasm-bindgen"] }
 worker = { version = "0.8.5", features = ["d1"] }
