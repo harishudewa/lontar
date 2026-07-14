@@ -11,4 +11,5 @@ jwt-simple = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { version = "0.3", features = ["wasm-bindgen"] }
+uuid = { workspace = true, features = ["js", "v7"]}
 worker = { version = "0.8.5", features = ["d1"] }

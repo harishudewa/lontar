@@ -43,6 +43,12 @@ export const FetchSchema = createSchema({
         }),
         output: v.string(),
     },
+    '@post/images': {
+        input: v.instance(Uint8Array),
+        output: v.object({
+            obj_key: v.string(),
+        }),
+    },
 });
 
 export const $fetch = createFetch({

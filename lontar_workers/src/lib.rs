@@ -2,18 +2,35 @@ use std::collections::HashMap;
 
 use jwt_simple::prelude::Ed25519KeyPair;
 use serde::{Deserialize, Serialize};
-use worker::{Context, Env, Headers, HttpMetadata, Request, Response, RouteContext, Router, event};
+use serde_json::json;
+use worker::{
+    Context, Env, Headers, HttpMetadata, Method, Request, Response, RouteContext, Router, event,
+};
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response> {
+    let cors = worker::Cors::new()
+        .with_origins(vec!["http://localhost:3000"])
+        .with_methods(vec![
+            Method::Post,
+            Method::Get,
+            Method::Put,
+            Method::Options,
+        ])
+        .with_allowed_headers(vec!["Content-Type", "Authorization"])
+        .with_credentials(true);
+
     let res = Router::new()
         .get_async("/", async move |_req, _ctx| Response::from_html("Hello"))
         .get_async("/gen-key", gen_key)
-        .get_async("/image", image_get)
+        .get_async("/images/:key", image_get)
         .post_async("/signin", signin)
-        .post_async("/image", image_upload)
+        .post_async("/images", image_upload)
+        .options("/images", move |_req, _ctx| Response::empty())
         .run(req, env)
-        .await?;
+        .await?
+        .with_cors(&cors)?;
+
     Ok(res)
 }
 
@@ -45,10 +62,10 @@ pub async fn image_upload(req: Request, ctx: RouteContext<()>) -> worker::Result
 
     let mut custom_metadata = HashMap::new();
     custom_metadata.insert(String::from("enc-alg"), String::from("XChaCha20Poly-1305"));
-    custom_metadata.insert(String::from("nonce-len"), String::from("24"));
+    let obj_key = format!("img-{}", uuid::Uuid::now_v7());
 
-    let obj = bucket
-        .put("testing2.jpg", stream)
+    bucket
+        .put(&obj_key, stream)
         .http_metadata(HttpMetadata {
             content_type: Some(String::from("application/octet-stream")),
             ..Default::default()
@@ -56,22 +73,25 @@ pub async fn image_upload(req: Request, ctx: RouteContext<()>) -> worker::Result
         .custom_metadata(custom_metadata)
         .execute()
         .await?;
-    let obj = obj.unwrap();
 
-    Response::from_html(obj.key())
+    Response::from_json(&json!({
+        "obj_key": obj_key
+    }))
 }
 
 pub async fn image_get(_req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let obj_key = match ctx.param("key") {
+        Some(key) => key,
+        None => return Response::error("Key not provided", 400),
+    };
+
     let bucket = ctx.env.bucket("lontar_bucket")?;
-    let obj = bucket.get("testing2.jpg").execute().await?.unwrap();
+    let obj = bucket.get(obj_key).execute().await?.unwrap();
 
     let body = match obj.body() {
         Some(body) => body,
         None => return Response::error("Object has no body", 500),
     };
-
-    // Streams the object straight through to the client without
-    // consuming Worker CPU time while it streams.
     let response_body = body.response_body()?;
 
     let headers = Headers::new();

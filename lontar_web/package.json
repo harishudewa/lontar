@@ -15,6 +15,7 @@
     "@shikijs/rehype": "^4.3.1",
     "@shikijs/themes": "^4.3.1",
     "@tailwindcss/vite": "^4.1.13",
+    "@types/hast": "^3.0.5",
     "shiki": "^4.3.1",
     "solid-devtools": "^0.34.3",
     "tailwindcss": "^4.1.13",
@@ -31,7 +32,9 @@
     "@codemirror/view": "^6.43.6",
     "@formisch/solid": "1.0.0-rc.0",
     "@lezer/common": "^1.5.2",
+    "@noble/ciphers": "^2.2.0",
     "@solidjs/router": "^0.16.1",
+    "idb": "^8.0.3",
     "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",
@@ -39,6 +42,7 @@
     "remark-rehype": "^11.1.2",
     "solid-js": "^1.9.9",
     "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
     "valibot": "^1.4.2"
   },
   "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8"

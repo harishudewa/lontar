@@ -6,3 +6,4 @@ members = ["lontar_core", "lontar_workers"]
 jwt-simple = "0.12"
 serde = "1"
 serde_json = "1"
+uuid = "1.23"

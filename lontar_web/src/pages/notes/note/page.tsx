@@ -15,8 +15,13 @@ import { markdown } from '@codemirror/lang-markdown';
 import { syntaxTree } from '@codemirror/language';
 import { TreeCursor } from '@lezer/common';
 import { Dynamic } from 'solid-js/web';
-import { hashKey } from '../../../lib/util';
+import { $fetch, hashKey } from '../../../lib/util';
 import remarkGfm from 'remark-gfm';
+import type { Root } from 'hast';
+import { visit } from 'unist-util-visit';
+import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
+import { getItem, setItem } from '../../../lib/db';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -26,21 +31,7 @@ const highlighter = await createHighlighterCore({
     engine: createOnigurumaEngine(() => import('shiki/wasm')),
 });
 
-const parseContent = (content: string) => {
-    return String(
-        unified()
-            .use(remarkParse)
-            .use(remarkGfm)
-            .use(remarkRehype)
-            .use(rehypeSanitize)
-            .use(rehypeShikiFromHighlighter, highlighter as unknown as HighlighterGeneric<any, any>, {
-                theme: 'vitesse-dark',
-                inline: 'tailing-curly-colon',
-            })
-            .use(rehypeStringify)
-            .processSync(content)
-    );
-};
+const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
 
 const NotePage: Component = () => {
     let content = `# Heading 1
@@ -56,13 +47,50 @@ const NotePage: Component = () => {
 1. numbered list
    1. numbered list
    1. nested
-      - another one here`;
+      - another one here
+
+![](ian)`;
 
     const [editorView, setEditorView] = createSignal<EditorView | undefined>(undefined);
     const [displayMode, setDisplayMode] = createSignal<DisplayMode>('split');
     const [currentNodes, setCurrentNodes] = createSignal<Component[]>([]);
+    const [isChangedImages, setIsChangedImages] = createSignal(false);
+    let changedImages: Record<string, string[]> = {};
+
     let prevComponents = new Map<string, number[]>();
     let currComponents = new Map<string, number[]>();
+
+    createEffect(
+        on(isChangedImages, () => {
+            for (const [_, imgs] of Object.entries(changedImages)) {
+                for (const img of imgs) {
+                    let imgEl = document.querySelectorAll(`#${img}`);
+                    for (const [_, el] of imgEl.entries()) {
+                        let src = img;
+                        if (img === 'juun') {
+                            src = 'https://i.pinimg.com/736x/ca/19/10/ca1910b8b22f9136f8e55d1f8281a609.jpg';
+                        } else if (img === 'jiwoo') {
+                            src = 'https://i.pinimg.com/736x/ba/b5/d7/bab5d7e78575aad93081fe4777c1ecc8.jpg';
+                        } else if (img === 'ian') {
+                            src = 'https://i.pinimg.com/1200x/c2/5e/2f/c25e2f4138cb824ababf13e967036146.jpg';
+                        } else {
+                            getItem(img).then((val) => {
+                                const key = hexToBytes(DUMMY_ENC_KEY);
+                                const chacha = managedNonce(xchacha20poly1305)(key);
+                                const imgData = chacha.decrypt(val);
+                                src = URL.createObjectURL(new Blob([imgData]));
+                                (el as HTMLImageElement).src = src;
+                                (el as HTMLImageElement).onload = () => {
+                                    URL.revokeObjectURL(src);
+                                };
+                            });
+                        }
+                        (el as HTMLImageElement).src = src;
+                    }
+                }
+            }
+        })
+    );
 
     document.addEventListener('keydown', (e) => {
         if (e.ctrlKey && e.altKey) {
@@ -84,6 +112,43 @@ const NotePage: Component = () => {
             }
         }
     });
+
+    let pending: number | undefined;
+    const processChangedImages = (imgs: string[], hashKey: string) => {
+        if (pending) clearTimeout(pending);
+        pending = setTimeout(() => {
+            changedImages[hashKey] = imgs;
+            setIsChangedImages(!isChangedImages());
+        }, 250);
+    };
+
+    const parseContent = (content: string, hashKey: string) => {
+        return String(
+            unified()
+                .use(remarkParse)
+                .use(remarkGfm)
+                .use(remarkRehype)
+                .use(rehypeSanitize)
+                .use(rehypeShikiFromHighlighter, highlighter as unknown as HighlighterGeneric<any, any>, {
+                    theme: 'vitesse-dark',
+                    inline: 'tailing-curly-colon',
+                })
+                .use(rehypeStringify)
+                .use(() => {
+                    return (tree: Root) => {
+                        const imgs: string[] = [];
+                        visit(tree, 'element', (node) => {
+                            if (node.tagName === 'img' && node.properties.src) {
+                                imgs.push(node.properties.src);
+                                node.properties.id = node.properties.src;
+                                processChangedImages(imgs, hashKey);
+                            }
+                        });
+                    };
+                })
+                .processSync(content)
+        );
+    };
 
     const processChanges = (currState: EditorState) => {
         const currStateTree = syntaxTree(currState);
@@ -121,7 +186,7 @@ const NotePage: Component = () => {
         currComponents.set(key, [...(currComponents.get(key) || []), idx]);
         const text = state.doc.sliceString(cursor.node.from, cursor.node.to);
         const RenderComponent: Component = () => {
-            return <div innerHTML={parseContent(text)}></div>;
+            return <div innerHTML={parseContent(text, `${key}:${idx}`)}></div>;
         };
         return RenderComponent;
     };
@@ -131,23 +196,37 @@ const NotePage: Component = () => {
 
         if (files && files.length > 0) {
             const imagePlaceholder = '<!-- Uploading image -->';
-            const loadingText = `\n${imagePlaceholder}\n`;
+            const loadingText = `\n${imagePlaceholder}\n\n`;
             view.dispatch(view.state.replaceSelection(loadingText));
 
-            new Promise((resolve) => {
-                setTimeout(() => {
-                    resolve(0);
-                    const placeholderIndex = view.state.doc.toString().indexOf(imagePlaceholder);
-                    if (placeholderIndex != -1) {
-                        view.dispatch({
-                            changes: {
-                                from: placeholderIndex,
-                                to: placeholderIndex + imagePlaceholder.length,
-                                insert: 'Image uploaded.',
-                            },
+            // try encrypt-decrypt
+            const key = hexToBytes(DUMMY_ENC_KEY);
+            const chacha = managedNonce(xchacha20poly1305)(key);
+            files[0].bytes().then((val) => {
+                const encImgData = chacha.encrypt(val);
+                $fetch('@post/images', {
+                    headers: {
+                        'content-type': 'application/octet-stream',
+                    },
+                    body: encImgData,
+                }).then((val) => {
+                    if (val.data) {
+                        const placeholderIndex = view.state.doc.toString().indexOf(imagePlaceholder);
+                        setItem(val.data.obj_key, encImgData).then(() => {
+                            if (placeholderIndex != -1) {
+                                view.dispatch({
+                                    changes: {
+                                        from: placeholderIndex,
+                                        to: placeholderIndex + imagePlaceholder.length,
+                                        insert: `![](${val.data.obj_key})`,
+                                    },
+                                });
+                            }
                         });
+                    } else {
+                        console.error(val.error);
                     }
-                }, 2000);
+                });
             });
         }
     };
