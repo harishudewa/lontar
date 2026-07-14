@@ -10,7 +10,7 @@ const App: Component = () => {
         <Router>
             <Route path="/signin" component={SignInPage} />
             <Route path="/" component={NotesLayout}>
-                <Route path="/" component={NotePage} />
+                <Route path="/:noteId" component={NotePage} />
                 <Route path="/virtual" component={VirtualList} />
             </Route>
         </Router>
