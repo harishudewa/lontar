@@ -23,6 +23,7 @@ import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { getImage, getNote, setImage, setNote } from '../../../lib/db';
 import { useParams } from '@solidjs/router';
+import { Frontiers, LoroDoc, VersionVector } from 'loro-crdt';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -40,8 +41,11 @@ const NotePage: Component = () => {
     const [displayMode, setDisplayMode] = createSignal<DisplayMode>('split');
     const [currentNodes, setCurrentNodes] = createSignal<Component[]>([]);
     const [isChangedImages, setIsChangedImages] = createSignal(false);
-    const [initNoteContent, setInitNoteContent] = createSignal<Text | undefined>(undefined);
+    const [initNoteContent, setInitNoteContent] = createSignal<string | undefined>(undefined);
     let changedImages: Record<string, string[]> = {};
+    let loroDoc = new LoroDoc();
+    let latestVersion: VersionVector | undefined = undefined;
+    let peerId = 0;
 
     let prevComponents = new Map<string, number[]>();
     let currComponents = new Map<string, number[]>();
@@ -103,11 +107,15 @@ const NotePage: Component = () => {
 
     getNote(params.noteId || 'newNote').then((note) => {
         if (note) {
-            const text = ChangeSet.fromJSON(note.changeSet).apply(Text.of([note.baseContent]));
-            setInitNoteContent(text);
+            loroDoc = LoroDoc.fromSnapshot(note.loroBytes);
+            loroDoc.setPeerId(note.peerId);
+            const lText = loroDoc.getText('content');
+            setInitNoteContent(lText.toString());
         } else {
-            setInitNoteContent(Text.empty);
+            setInitNoteContent('');
         }
+        latestVersion = loroDoc.oplogVersion();
+        console.log('latestVersion', latestVersion);
     });
 
     let pendingItems: Record<string, number> = {};
@@ -230,12 +238,33 @@ const NotePage: Component = () => {
 
     const storeChanges = (changeSet: ChangeSet, prevState: EditorState, noteId: string) => {
         getNote(noteId).then((val) => {
+            let v: Record<string, any> = val;
             if (!val) {
-                setNote(params.noteId || '', { changeSet: changeSet.toJSON(), baseContent: prevState.doc.toString() });
+                v = {
+                    changeSet: changeSet.toJSON(),
+                    baseContent: prevState.doc.toString(),
+                    loroBytes: loroDoc.export({ mode: 'shallow-snapshot', frontiers: loroDoc.frontiers() }),
+                    loroPendingStoreBytes: loroDoc.export({ mode: 'update', from: latestVersion }),
+                    peerId: loroDoc.peerId,
+                };
             } else {
-                val.changeSet = ChangeSet.fromJSON(val.changeSet).compose(changeSet).toJSON();
-                setNote(params.noteId || '', val);
+                // v.changeSet = ChangeSet.fromJSON(val.changeSet).compose(changeSet).toJSON();
             }
+            changeSet.iterChanges((fromA, toA, fromB, toB, inserted) => {
+                // Loro
+                const loroText = loroDoc.getText('content');
+                console.log(fromA, toA, fromB, toB, inserted);
+                if (fromA != toA) {
+                    loroText.delete(fromA, toA - fromA);
+                }
+                if (fromB != toB) {
+                    loroText.insert(fromB, inserted.toString());
+                }
+                v.loroBytes = loroDoc.export({ mode: 'snapshot' });
+                v.loroPendingStoreBytes = loroDoc.export({ mode: 'update', from: latestVersion });
+            });
+
+            setNote(params.noteId || '', v);
         });
     };
 
