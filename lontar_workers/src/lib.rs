@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use jwt_simple::prelude::Ed25519KeyPair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 use worker::{
     Context, Env, Headers, HttpMetadata, Method, Request, Response, RouteContext, Router, event,
+    wasm_bindgen::JsValue,
 };
 
 #[event(fetch)]
@@ -16,6 +18,7 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
             Method::Get,
             Method::Put,
             Method::Options,
+            Method::Patch,
         ])
         .with_allowed_headers(vec!["Content-Type", "Authorization"])
         .with_credentials(true);
@@ -24,9 +27,14 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
         .get_async("/", async move |_req, _ctx| Response::from_html("Hello"))
         .get_async("/gen-key", gen_key)
         .get_async("/images/:key", image_get)
+        .get_async("/notes/:note_id", note_get)
         .post_async("/signin", signin)
         .post_async("/images", image_upload)
         .options("/images", move |_req, _ctx| Response::empty())
+        .post_async("/notes", note_create)
+        .patch_async("/notes/:note_id", note_update)
+        .options("/notes", move |_req, _ctx| Response::empty())
+        .options("/notes/:note_id", move |_req, _ctx| Response::empty())
         .run(req, env)
         .await?
         .with_cors(&cors)?;
@@ -38,6 +46,16 @@ async fn main(req: Request, env: Env, _ctx: Context) -> worker::Result<Response>
 pub struct SigninRequest {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct Note {
+    pub id: String,
+    pub version: u32,
+    pub content: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub deleted_at: Option<u64>,
 }
 
 pub async fn signin(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
@@ -99,4 +117,116 @@ pub async fn image_get(_req: Request, ctx: RouteContext<()>) -> worker::Result<R
     headers.set("Cache-Control", "public, max-age=31536000")?;
 
     Ok(Response::from_body(response_body)?.with_headers(headers))
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NoteUpdateRequestJson {
+    pub metadata: Option<String>,
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NoteUpdateResponse {
+    pub note_id: String,
+}
+
+pub async fn note_update(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let payload_json: NoteUpdateRequestJson = match req.json().await {
+        Ok(p) => p,
+        Err(_) => return Response::error("Invalid request body", 400),
+    };
+
+    let id = match ctx.param("note_id") {
+        Some(id) => id,
+        None => return Response::error("Invalid note id", 400),
+    };
+
+    if payload_json.metadata.is_none() && payload_json.content.is_none() {
+        return Response::error("Invalid metadata and content", 400);
+    }
+
+    let metadata = match payload_json.metadata {
+        Some(v) => JsValue::from_str(&v),
+        None => JsValue::NULL,
+    };
+    let content = match payload_json.content {
+        Some(v) => JsValue::from_str(&v),
+        None => JsValue::NULL,
+    };
+
+    let db = ctx.d1("lontar_db")?;
+    let statement = db.prepare(
+        "UPDATE notes
+        SET
+        metadata    = COALESCE(?2, metadata),
+        content     = COALESCE(?3, content),
+        version     = version + 1,
+        updated_at  = unixepoch()
+        WHERE id = ?1",
+    );
+    let query = statement.bind(&[JsValue::from_str(id), metadata, content])?;
+    let result = query.run().await?;
+
+    if let Some(e) = result.error() {
+        return Response::error(e, 500);
+    }
+
+    let response = NoteUpdateResponse {
+        note_id: id.to_owned(),
+    };
+
+    Response::from_json(&response)
+}
+
+pub async fn note_get(_req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let note_id = match ctx.param("note_id") {
+        Some(val) => val,
+        None => return Response::error("invalid note id", 400),
+    };
+
+    let db = ctx.d1("lontar_db")?;
+    let statement = db.prepare("SELECT * FROM notes WHERE id = ?1");
+    let query = statement.bind(&[JsValue::from_str(&note_id)])?;
+    let result = query.first::<Note>(None).await?;
+
+    match result {
+        Some(note) => Response::from_json(&note),
+        None => Response::error("not found", 404),
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NoteCreateRequestJson {
+    pub metadata: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NoteCreateResponse {
+    pub note_id: String,
+}
+
+pub async fn note_create(mut req: Request, ctx: RouteContext<()>) -> worker::Result<Response> {
+    let payload_json: NoteCreateRequestJson = match req.json().await {
+        Ok(p) => p,
+        Err(_) => return Response::error("Invalid request body", 400),
+    };
+
+    let id = Uuid::now_v7().to_string();
+
+    let db = ctx.d1("lontar_db")?;
+    let statement = db.prepare("INSERT INTO notes (id, version, metadata) VALUES (?1, ?2, ?3)");
+    let query = statement.bind(&[
+        JsValue::from_str(&id),
+        JsValue::from_f64(1 as f64),
+        JsValue::from_str(&payload_json.metadata),
+    ])?;
+    let result = query.run().await?;
+
+    if let Some(e) = result.error() {
+        return Response::error(e, 500);
+    }
+
+    let response = NoteCreateResponse { note_id: id };
+
+    Response::from_json(&response)
 }

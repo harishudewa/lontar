@@ -1036,6 +1036,7 @@ version = "0.1.0"
 dependencies = [
  "jwt-simple",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "time",
  "uuid",

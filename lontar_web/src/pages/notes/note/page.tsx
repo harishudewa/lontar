@@ -4,13 +4,13 @@ import rehypeSanitize from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
-import { createEffect, createSignal, For, on, Show, type Component } from 'solid-js';
+import { createEffect, createSignal, For, on, Show, useContext, type Component } from 'solid-js';
 import { unified } from 'unified';
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core';
 import { createHighlighterCore } from 'shiki/core';
 import { createOnigurumaEngine, HighlighterGeneric } from 'shiki';
 import AuthGuard from '../../auth_guard';
-import { ChangeSet, EditorState, Text } from '@codemirror/state';
+import { ChangeSet, EditorState } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
 import { syntaxTree } from '@codemirror/language';
 import { TreeCursor } from '@lezer/common';
@@ -23,7 +23,8 @@ import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { getImage, getNote, setImage, setNote } from '../../../lib/db';
 import { useParams } from '@solidjs/router';
-import { Frontiers, LoroDoc, VersionVector } from 'loro-crdt';
+import { LoroDoc } from 'loro-crdt';
+import { useNote } from '../note-provider';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -33,22 +34,75 @@ const highlighter = await createHighlighterCore({
     engine: createOnigurumaEngine(() => import('shiki/wasm')),
 });
 
-// const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
 const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
 
 const NotePage: Component = () => {
     const params = useParams();
+    const noteCtx = useNote();
     const [displayMode, setDisplayMode] = createSignal<DisplayMode>('split');
     const [currentNodes, setCurrentNodes] = createSignal<Component[]>([]);
     const [isChangedImages, setIsChangedImages] = createSignal(false);
     const [initNoteContent, setInitNoteContent] = createSignal<string | undefined>(undefined);
+    const [recordSnapshot, setRecordSnapshot] = createSignal(false);
+    const [editorView, setEditorView] = createSignal<EditorView | undefined>(undefined);
     let changedImages: Record<string, string[]> = {};
     let loroDoc = new LoroDoc();
-    let latestVersion: VersionVector | undefined = undefined;
-    let peerId = 0;
 
     let prevComponents = new Map<string, number[]>();
     let currComponents = new Map<string, number[]>();
+
+    const initializeNote = () => {
+        getNote(params.noteId || 'newNote').then((note) => {
+            if (note) {
+                const key = hexToBytes(DUMMY_ENC_KEY);
+                const chacha = managedNonce(xchacha20poly1305)(key);
+                const snapshot = chacha.decrypt(note.snapshot);
+                loroDoc = LoroDoc.fromSnapshot(snapshot);
+                loroDoc.setPeerId(note.peerId);
+                const lText = loroDoc.getText('content');
+                setInitNoteContent(lText.toString());
+            } else {
+                if (!params.noteId) return;
+                $fetch('@get/notes/:noteId', {
+                    params: {
+                        noteId: params.noteId,
+                    },
+                }).then((val) => {
+                    let content = '';
+                    const v: Record<string, any> = {
+                        version: (val.data?.version || 0) + 1,
+                    };
+                    if (!val.error && val.data.content) {
+                        const key = hexToBytes(DUMMY_ENC_KEY);
+                        const chacha = managedNonce(xchacha20poly1305)(key);
+                        const contentBytes = hexToBytes(val.data.content);
+                        const snapshot = chacha.decrypt(contentBytes);
+                        loroDoc = LoroDoc.fromSnapshot(snapshot);
+                        const lText = loroDoc.getText('content');
+                        content = lText.toString();
+                        v.peerId = loroDoc.peerId;
+                        v.snapshot = contentBytes;
+                    }
+                    setNote(params.noteId || '', v);
+                    setInitNoteContent(content);
+                });
+            }
+        });
+    };
+
+    initializeNote();
+
+    createEffect(
+        on(noteCtx.isNoteUpdated, (isNoteUpdated) => {
+            if (isNoteUpdated && params.noteId) {
+                initializeNote();
+                // console.log('destroying start');
+                // editorView()?.destroy();
+                // noteCtx.setIsNoteUpdated(false);
+                // console.log('destroying end');
+            }
+        })
+    );
 
     createEffect(
         on(isChangedImages, () => {
@@ -103,19 +157,6 @@ const NotePage: Component = () => {
                 }
             }
         }
-    });
-
-    getNote(params.noteId || 'newNote').then((note) => {
-        if (note) {
-            loroDoc = LoroDoc.fromSnapshot(note.loroBytes);
-            loroDoc.setPeerId(note.peerId);
-            const lText = loroDoc.getText('content');
-            setInitNoteContent(lText.toString());
-        } else {
-            setInitNoteContent('');
-        }
-        latestVersion = loroDoc.oplogVersion();
-        console.log('latestVersion', latestVersion);
     });
 
     let pendingItems: Record<string, number> = {};
@@ -184,6 +225,7 @@ const NotePage: Component = () => {
 
         prevComponents = currComponents;
         currComponents = new Map();
+
         setCurrentNodes(newNodes);
     };
 
@@ -200,6 +242,8 @@ const NotePage: Component = () => {
         const files = event.clipboardData?.files;
 
         if (files && files.length > 0) {
+            // We need to check the mimetype;
+            console.log(files[0].type);
             const imagePlaceholder = '<!-- Uploading image -->';
             const loadingText = `\n${imagePlaceholder}\n\n`;
             view.dispatch(view.state.replaceSelection(loadingText));
@@ -236,32 +280,32 @@ const NotePage: Component = () => {
         }
     };
 
-    const storeChanges = (changeSet: ChangeSet, prevState: EditorState, noteId: string) => {
+    const storeChanges = (changeSet: ChangeSet, noteId: string) => {
+        if (!recordSnapshot()) return;
         getNote(noteId).then((val) => {
-            let v: Record<string, any> = val;
+            let v: Record<string, any> = val || {};
+            v.peerId = loroDoc.peerId;
             if (!val) {
-                v = {
-                    changeSet: changeSet.toJSON(),
-                    baseContent: prevState.doc.toString(),
-                    loroBytes: loroDoc.export({ mode: 'shallow-snapshot', frontiers: loroDoc.frontiers() }),
-                    loroPendingStoreBytes: loroDoc.export({ mode: 'update', from: latestVersion }),
-                    peerId: loroDoc.peerId,
-                };
-            } else {
-                // v.changeSet = ChangeSet.fromJSON(val.changeSet).compose(changeSet).toJSON();
+                const snapshot = loroDoc.export({ mode: 'snapshot' });
+                const key = hexToBytes(DUMMY_ENC_KEY);
+                const chacha = managedNonce(xchacha20poly1305)(key);
+                const encSnapshot = chacha.encrypt(snapshot);
+                v.snapshot = encSnapshot;
+                v.version = 1;
             }
             changeSet.iterChanges((fromA, toA, fromB, toB, inserted) => {
-                // Loro
                 const loroText = loroDoc.getText('content');
-                console.log(fromA, toA, fromB, toB, inserted);
                 if (fromA != toA) {
                     loroText.delete(fromA, toA - fromA);
                 }
                 if (fromB != toB) {
                     loroText.insert(fromB, inserted.toString());
                 }
-                v.loroBytes = loroDoc.export({ mode: 'snapshot' });
-                v.loroPendingStoreBytes = loroDoc.export({ mode: 'update', from: latestVersion });
+                const snapshot = loroDoc.export({ mode: 'snapshot' });
+                const key = hexToBytes(DUMMY_ENC_KEY);
+                const chacha = managedNonce(xchacha20poly1305)(key);
+                const encSnapshot = chacha.encrypt(snapshot);
+                v.snapshot = encSnapshot;
             });
 
             setNote(params.noteId || '', v);
@@ -271,64 +315,91 @@ const NotePage: Component = () => {
     createEffect(
         on(initNoteContent, (note) => {
             if (note !== undefined) {
+                editorView()?.destroy();
+                const extensions = [
+                    lineNumbers(),
+                    history(),
+                    drawSelection(),
+                    EditorView.lineWrapping,
+                    keymap.of([indentWithTab]),
+                    EditorView.theme(
+                        {
+                            '&': {
+                                color: 'white',
+                                backgroundColor: '#020202',
+                            },
+                            '.cm-content': {
+                                caretColor: '#0e9',
+                            },
+                            '&.cm-focused .cm-cursor': {
+                                borderLeftColor: '#0e9',
+                            },
+                            '&.cm-focused .cm-selectionBackground, ::selection': {
+                                backgroundColor: '#074',
+                            },
+                            '.cm-gutters': {
+                                backgroundColor: '#353535',
+                                color: '#ddd',
+                                border: 'none',
+                            },
+                        },
+                        { dark: true }
+                    ),
+                    EditorView.domEventHandlers({
+                        paste: handlePaste,
+                    }),
+                    EditorView.updateListener.of((view) => {
+                        if (view.docChanged || currentNodes().length === 0) {
+                            processChanges(view.state);
+                        }
+                        if (view.docChanged) {
+                            storeChanges(view.changes, params.noteId || 'new');
+                        }
+                    }),
+                    EditorView.contentAttributes.of({
+                        spellcheck: 'false',
+                        autocorrect: 'off',
+                        autocapitalize: 'off',
+                    }),
+                    markdown(),
+                ];
                 const view = new EditorView({
                     doc: note,
                     parent: document.querySelector('#editor') || undefined,
-                    extensions: [
-                        lineNumbers(),
-                        history(),
-                        drawSelection(),
-                        EditorView.lineWrapping,
-                        keymap.of([indentWithTab]),
-                        EditorView.theme(
-                            {
-                                '&': {
-                                    color: 'white',
-                                    backgroundColor: '#020202',
-                                },
-                                '.cm-content': {
-                                    caretColor: '#0e9',
-                                },
-                                '&.cm-focused .cm-cursor': {
-                                    borderLeftColor: '#0e9',
-                                },
-                                '&.cm-focused .cm-selectionBackground, ::selection': {
-                                    backgroundColor: '#074',
-                                },
-                                '.cm-gutters': {
-                                    backgroundColor: '#353535',
-                                    color: '#ddd',
-                                    border: 'none',
-                                },
-                            },
-                            { dark: true }
-                        ),
-                        EditorView.domEventHandlers({
-                            paste: handlePaste,
-                        }),
-                        EditorView.updateListener.of((view) => {
-                            if (view.docChanged || currentNodes().length === 0) {
-                                processChanges(view.state);
-                            }
-                            if (view.docChanged) {
-                                storeChanges(view.changes, view.startState, params.noteId || 'new');
-                            }
-                        }),
-                        EditorView.contentAttributes.of({
-                            spellcheck: 'false',
-                            autocorrect: 'off',
-                            autocapitalize: 'off',
-                        }),
-                        markdown(),
-                    ],
+                    extensions,
                 });
+                setEditorView(view);
+                // HACK: To make preview always render correctly fully to trigger parsing the whole syntaxTree
+                view.dispatch({
+                    effects: EditorView.scrollIntoView(view.state.doc.length, { y: 'center' }),
+                });
+
+                let insertTimeout = 0,
+                    deleteTimeout = 0;
+
+                insertTimeout = setTimeout(() => {
+                    view.dispatch({
+                        changes: { from: view.state.doc.length, insert: ' ' },
+                    });
+                    clearTimeout(insertTimeout);
+                }, 500);
+
+                deleteTimeout = setTimeout(() => {
+                    const newEndPos = view.state.doc.length;
+                    view.dispatch({
+                        changes: { from: newEndPos - 1, to: newEndPos, insert: '' },
+                    });
+                    setRecordSnapshot(true);
+                    clearTimeout(deleteTimeout);
+                }, 500);
+                // HACK: To make preview always render correctly fully to trigger parsing the whole syntaxTree
             }
         })
     );
 
     return (
         <AuthGuard>
-            <div class="flex w-full mx-auto flex-1">
+            <div id="editorParent" class="flex w-full mx-auto flex-1">
                 <Show when={displayMode() === 'write' || displayMode() === 'split'}>
                     <div id="editor" class="w-full flex-1 p-4 pb-40 border-r h-[calc(100vh-2.5rem)] overflow-auto" />
                 </Show>

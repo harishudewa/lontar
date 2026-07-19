@@ -36,7 +36,7 @@ export const setCookie = (params: SetCookieParams) => {
 };
 
 export const FetchSchema = createSchema({
-    '/signin': {
+    '@post/signin': {
         input: v.object({
             username: v.string(),
             password: v.string(),
@@ -47,6 +47,33 @@ export const FetchSchema = createSchema({
         input: v.instance(Uint8Array),
         output: v.object({
             obj_key: v.string(),
+        }),
+    },
+    '@get/notes/:noteId': {
+        output: v.object({
+            id: v.string(),
+            version: v.number(),
+            content: v.nullable(v.string()),
+            created_at: v.number(),
+            updated_at: v.number(),
+            deleted_at: v.nullable(v.number()),
+        }),
+    },
+    '@post/notes': {
+        input: v.object({
+            metadata: v.string(),
+        }),
+        output: v.object({
+            note_id: v.string(),
+        }),
+    },
+    '@patch/notes/:noteId': {
+        input: v.object({
+            metadata: v.optional(v.string()),
+            content: v.optional(v.string()),
+        }),
+        output: v.object({
+            note_id: v.string(),
         }),
     },
 });

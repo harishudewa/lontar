@@ -4,16 +4,21 @@ import SignInPage from './pages/signin/page';
 import NotePage from './pages/notes/note/page';
 import NotesLayout from './pages/notes/layout';
 import VirtualList from './pages/notes/virtualist';
+import NotesPage from './pages/notes/page';
+import NoteProvider from './pages/notes/note-provider';
 
 const App: Component = () => {
     return (
-        <Router>
-            <Route path="/signin" component={SignInPage} />
-            <Route path="/" component={NotesLayout}>
-                <Route path="/:noteId" component={NotePage} />
-                <Route path="/virtual" component={VirtualList} />
-            </Route>
-        </Router>
+        <NoteProvider>
+            <Router>
+                <Route path="/signin" component={SignInPage} />
+                <Route path="/" component={NotesPage} />
+                <Route path="/notes" component={NotesLayout}>
+                    <Route path="/:noteId" component={NotePage} />
+                    <Route path="/virtual" component={VirtualList} />
+                </Route>
+            </Router>
+        </NoteProvider>
     );
 };
 
