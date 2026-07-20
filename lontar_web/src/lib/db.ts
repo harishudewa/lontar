@@ -4,10 +4,11 @@ let dbPromise: Promise<IDBPDatabase<unknown>>;
 
 export const getDB = () => {
     if (!dbPromise) {
-        dbPromise = openDB('lontar_db', 2, {
+        dbPromise = openDB('lontar_db', 3, {
             upgrade(db) {
                 db.createObjectStore('lontar_db_images_store');
                 db.createObjectStore('lontar_db_notes_store');
+                db.createObjectStore('lontar_db_metadata_store');
             },
         });
     }
@@ -33,4 +34,14 @@ export const setNote = async (noteId: string, value: Record<string, any>) => {
 export const getNote = async (noteId: string) => {
     const db = await getDB();
     return db.get('lontar_db_notes_store', noteId) as Promise<Record<string, any>>;
+};
+
+export const setMetadata = async (metadataId: string, value: Record<string, any>) => {
+    const db = await getDB();
+    return db.put('lontar_db_metadata_store', value, metadataId);
+};
+
+export const getMetadata = async (metadataId: string) => {
+    const db = await getDB();
+    return db.get('lontar_db_metadata_store', metadataId) as Promise<Record<string, any>>;
 };

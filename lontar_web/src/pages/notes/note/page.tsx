@@ -4,7 +4,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
-import { createEffect, createSignal, For, on, Show, useContext, type Component } from 'solid-js';
+import { createEffect, createSignal, For, on, Show, type Component } from 'solid-js';
 import { unified } from 'unified';
 import rehypeShikiFromHighlighter from '@shikijs/rehype/core';
 import { createHighlighterCore } from 'shiki/core';
@@ -15,7 +15,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { syntaxTree } from '@codemirror/language';
 import { TreeCursor } from '@lezer/common';
 import { Dynamic } from 'solid-js/web';
-import { $fetch, hashKey } from '../../../lib/util';
+import { $fetch, decrypt, encrypt, hashKey } from '../../../lib/util';
 import remarkGfm from 'remark-gfm';
 import type { Root } from 'hast';
 import { visit } from 'unist-util-visit';
@@ -23,8 +23,9 @@ import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { getImage, getNote, setImage, setNote } from '../../../lib/db';
 import { useParams } from '@solidjs/router';
-import { LoroDoc } from 'loro-crdt';
+import { LoroDoc, VersionVector } from 'loro-crdt';
 import { useNote } from '../note-provider';
+import { VList } from 'virtua/solid';
 
 type DisplayMode = 'write' | 'preview' | 'split';
 
@@ -52,39 +53,48 @@ const NotePage: Component = () => {
     let currComponents = new Map<string, number[]>();
 
     const initializeNote = () => {
-        getNote(params.noteId || 'newNote').then((note) => {
+        if (!params.noteId) return;
+
+        getNote(params.noteId).then((note) => {
             if (note) {
-                const key = hexToBytes(DUMMY_ENC_KEY);
-                const chacha = managedNonce(xchacha20poly1305)(key);
-                const snapshot = chacha.decrypt(note.snapshot);
+                const snapshot = decrypt(note.snapshot);
+
                 loroDoc = LoroDoc.fromSnapshot(snapshot);
                 loroDoc.setPeerId(note.peerId);
-                const lText = loroDoc.getText('content');
-                setInitNoteContent(lText.toString());
+                if (note.updates) {
+                    const updates = decrypt(note.updates);
+                    loroDoc.import(updates);
+                }
+
+                setInitNoteContent(loroDoc.getText('content').toString());
             } else {
-                if (!params.noteId) return;
                 $fetch('@get/notes/:noteId', {
                     params: {
-                        noteId: params.noteId,
+                        noteId: params.noteId!,
                     },
                 }).then((val) => {
                     let content = '';
+
                     const v: Record<string, any> = {
                         version: (val.data?.version || 0) + 1,
+                        loroVersion: loroDoc.version().encode(),
+                        snapshot: encrypt(loroDoc.export({ mode: 'snapshot' })),
+                        peerId: loroDoc.peerId,
                     };
+
                     if (!val.error && val.data.content) {
-                        const key = hexToBytes(DUMMY_ENC_KEY);
-                        const chacha = managedNonce(xchacha20poly1305)(key);
                         const contentBytes = hexToBytes(val.data.content);
-                        const snapshot = chacha.decrypt(contentBytes);
+                        const snapshot = decrypt(contentBytes);
+
                         loroDoc = LoroDoc.fromSnapshot(snapshot);
-                        const lText = loroDoc.getText('content');
-                        content = lText.toString();
-                        v.peerId = loroDoc.peerId;
+                        content = loroDoc.getText('content').toString();
+
                         v.snapshot = contentBytes;
                     }
-                    setNote(params.noteId || '', v);
-                    setInitNoteContent(content);
+
+                    setNote(params.noteId!, v).then(() => {
+                        setInitNoteContent(content);
+                    });
                 });
             }
         });
@@ -96,10 +106,6 @@ const NotePage: Component = () => {
         on(noteCtx.isNoteUpdated, (isNoteUpdated) => {
             if (isNoteUpdated && params.noteId) {
                 initializeNote();
-                // console.log('destroying start');
-                // editorView()?.destroy();
-                // noteCtx.setIsNoteUpdated(false);
-                // console.log('destroying end');
             }
         })
     );
@@ -285,14 +291,14 @@ const NotePage: Component = () => {
         getNote(noteId).then((val) => {
             let v: Record<string, any> = val || {};
             v.peerId = loroDoc.peerId;
-            if (!val) {
+
+            if (!val || !v.snapshot) {
                 const snapshot = loroDoc.export({ mode: 'snapshot' });
-                const key = hexToBytes(DUMMY_ENC_KEY);
-                const chacha = managedNonce(xchacha20poly1305)(key);
-                const encSnapshot = chacha.encrypt(snapshot);
+                const encSnapshot = encrypt(snapshot);
                 v.snapshot = encSnapshot;
-                v.version = 1;
+                v.loroVersion = loroDoc.version().encode();
             }
+
             changeSet.iterChanges((fromA, toA, fromB, toB, inserted) => {
                 const loroText = loroDoc.getText('content');
                 if (fromA != toA) {
@@ -301,14 +307,12 @@ const NotePage: Component = () => {
                 if (fromB != toB) {
                     loroText.insert(fromB, inserted.toString());
                 }
-                const snapshot = loroDoc.export({ mode: 'snapshot' });
-                const key = hexToBytes(DUMMY_ENC_KEY);
-                const chacha = managedNonce(xchacha20poly1305)(key);
-                const encSnapshot = chacha.encrypt(snapshot);
-                v.snapshot = encSnapshot;
+                const updates = loroDoc.export({ mode: 'update', from: VersionVector.decode(v.loroVersion) });
+                const encUpdates = encrypt(updates);
+                v.updates = encUpdates;
             });
 
-            setNote(params.noteId || '', v);
+            setNote(noteId, v);
         });
     };
 
@@ -369,7 +373,8 @@ const NotePage: Component = () => {
                     extensions,
                 });
                 setEditorView(view);
-                // HACK: To make preview always render correctly fully to trigger parsing the whole syntaxTree
+
+                // <!-- HACK: To make preview always render correctly fully to trigger parsing the whole syntaxTree
                 view.dispatch({
                     effects: EditorView.scrollIntoView(view.state.doc.length, { y: 'center' }),
                 });
@@ -392,7 +397,9 @@ const NotePage: Component = () => {
                     setRecordSnapshot(true);
                     clearTimeout(deleteTimeout);
                 }, 500);
-                // HACK: To make preview always render correctly fully to trigger parsing the whole syntaxTree
+                // -->
+
+                noteCtx.setIsNoteUpdated(false);
             }
         })
     );
@@ -404,8 +411,8 @@ const NotePage: Component = () => {
                     <div id="editor" class="w-full flex-1 p-4 pb-40 border-r h-[calc(100vh-2.5rem)] overflow-auto" />
                 </Show>
                 <Show when={displayMode() === 'preview' || displayMode() === 'split'}>
-                    <div class="w-full flex-1 p-4 pb-40 h-[calc(100vh-2.5rem)] overflow-auto note-content">
-                        <For each={currentNodes()}>{(el) => <Dynamic component={el} />}</For>
+                    <div class="w-full flex-1 p-4 note-content">
+                        <VList data={currentNodes()}>{(d, i) => <Dynamic component={d} />}</VList>
                     </div>
                 </Show>
             </div>

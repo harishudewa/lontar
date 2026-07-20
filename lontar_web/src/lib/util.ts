@@ -1,5 +1,10 @@
 import { createFetch, createSchema } from '@better-fetch/fetch';
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
+import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
+import { LoroDoc, LoroText } from 'loro-crdt';
 import * as v from 'valibot';
+
+const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
 
 export const getCookie = (key: string) => {
     return document.cookie
@@ -94,4 +99,53 @@ export const fnv1a32 = (str: string, seed: number) => {
 
 export const hashKey = (str: string) => {
     return fnv1a32(str, 0x811c9dc5) + fnv1a32(str, 0x9e3779b9);
+};
+
+export const encrypt = (val: Uint8Array) => {
+    const key = hexToBytes(DUMMY_ENC_KEY);
+    const chacha = managedNonce(xchacha20poly1305)(key);
+    const encrypted = chacha.encrypt(val);
+    return encrypted;
+};
+
+export const decrypt = (val: Uint8Array) => {
+    const key = hexToBytes(DUMMY_ENC_KEY);
+    const chacha = managedNonce(xchacha20poly1305)(key);
+    const decrypted = chacha.decrypt(val);
+    return decrypted;
+};
+
+export type CreateNoteMetadataParams = CreateNoteMetadataParamsV1;
+export type CreateNoteMetadataParamsV1 = {
+    data: {
+        title: string;
+    };
+    version: 1;
+};
+
+export const createNoteMetadata = (params: CreateNoteMetadataParams) => {
+    const doc = new LoroDoc();
+    const metadata = doc.getMap('note_metadata');
+
+    if (params.version === 1) {
+        const title = metadata.setContainer('title', new LoroText());
+        title.insert(0, params.data.title);
+    }
+
+    return doc;
+};
+
+export const initializeMetadata = () => {
+    const doc = new LoroDoc();
+    const metadata = doc.getMap('metadata');
+
+    // Paths
+    const paths = metadata.ensureMergeableMap('paths');
+    const rootDir = paths.ensureMergeableMap('/');
+    rootDir.ensureMergeableList('notes');
+
+    // Note metadata
+    metadata.ensureMergeableMap('note_metadata');
+
+    return doc;
 };

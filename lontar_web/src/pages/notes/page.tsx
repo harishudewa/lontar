@@ -1,25 +1,27 @@
-import { Component } from 'solid-js';
+import { Component, Show } from 'solid-js';
 import AuthGuard from '../auth_guard';
 import { createForm, Field, Form, SubmitHandler } from '@formisch/solid';
 import * as v from 'valibot';
 import { TextInput } from '../components/TextInput';
-import { $fetch } from '../../lib/util';
-import { bytesToHex, hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
-import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
-
-const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
+import { $fetch, createNoteMetadata, encrypt } from '../../lib/util';
+import { bytesToHex } from '@noble/ciphers/utils.js';
+import { useNote } from './note-provider';
 
 const CreateNoteSchema = v.object({
     title: v.pipe(v.string(), v.nonEmpty('Please enter note title')),
 });
 
 const NotesPage: Component = () => {
+    const noteCtx = useNote();
     return (
         <AuthGuard>
             <div class="flex-1 flex flex-col items-center justify-center w-full min-h-screen">
                 <div class="flex flex-col gap-4 w-full max-w-sm ">
                     <p>Create Note</p>
                     <CreateNoteForm />
+                    <Show when={noteCtx.isLoadingMetadata()}>
+                        <p>Loading....</p>
+                    </Show>
                 </div>
             </div>
         </AuthGuard>
@@ -32,21 +34,21 @@ const CreateNoteForm = () => {
     });
 
     const submitCreateNoteForm: SubmitHandler<typeof CreateNoteSchema> = async (values) => {
-        const metadata = JSON.stringify({
-            title: values.title,
-        });
-        const metadataBytes = new TextEncoder().encode(metadata);
+        const noteMetadata = createNoteMetadata({
+            data: {
+                title: values.title,
+            },
+            version: 1,
+        }).export({ mode: 'snapshot' });
 
-        const key = hexToBytes(DUMMY_ENC_KEY);
-        const chacha = managedNonce(xchacha20poly1305)(key);
-        const metadataEnc = chacha.encrypt(metadataBytes);
-        const metadataEncHex = bytesToHex(metadataEnc);
+        const noteMetadataEnc = encrypt(noteMetadata);
+        const noteMetadataEncHex = bytesToHex(noteMetadataEnc);
         const res = await $fetch('@post/notes', {
             headers: {
                 'content-type': 'application/json',
             },
             body: {
-                metadata: metadataEncHex,
+                metadata: noteMetadataEncHex,
             },
         });
         console.log(res);

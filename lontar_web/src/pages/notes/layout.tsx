@@ -18,8 +18,8 @@ const Navbar: Component = () => {
         if (!noteId) return;
 
         const localNote = await getNote(noteId);
-        if (!localNote || !localNote.version || !localNote.snapshot || !localNote.peerId) return;
-        const localSnapshotEncryptedBytes = localNote.snapshot;
+        if (!localNote || !localNote.version || !localNote.snapshot || !localNote.peerId || !localNote.loroVersion)
+            return;
 
         const getNoteRes = await $fetch('@get/notes/:noteId', {
             params: {
@@ -32,38 +32,49 @@ const Navbar: Component = () => {
             return;
         }
 
-        let localSnapshotEncryptedHex = bytesToHex(localSnapshotEncryptedBytes);
-
         if (getNoteRes.data.version >= localNote.version && getNoteRes.data.content) {
             console.log('starting');
             const key = hexToBytes(DUMMY_ENC_KEY);
             const chacha = managedNonce(xchacha20poly1305)(key);
             console.log('1');
 
-            const localSnapshotDecryptedBytes = chacha.decrypt(localSnapshotEncryptedBytes);
-            const localDoc = LoroDoc.fromSnapshot(localSnapshotDecryptedBytes);
-            localDoc.setPeerId(localNote.peerId);
-            console.log('2');
-
             const newSnapshotEncryptedBytes = hexToBytes(getNoteRes.data.content);
             const newSnapshotDecrypted = chacha.decrypt(newSnapshotEncryptedBytes);
+
+            console.log('2');
+            const newDoc = LoroDoc.fromSnapshot(newSnapshotDecrypted);
+            newDoc.setPeerId(localNote.peerId);
+            if (localNote.updates) {
+                const localUpdates = chacha.decrypt(localNote.updates);
+                newDoc.import(localUpdates);
+            }
             console.log('3');
 
-            localDoc.import(newSnapshotDecrypted);
-            console.log('4');
-
-            const syncedSnapshotBytes = localDoc.export({ mode: 'snapshot' });
+            const syncedSnapshotBytes = newDoc.export({ mode: 'snapshot' });
             const syncedSnapshotEncryptedBytes = chacha.encrypt(syncedSnapshotBytes);
             console.log('5');
 
             localNote.snapshot = syncedSnapshotEncryptedBytes;
             localNote.version = getNoteRes.data.version + 2;
+            localNote.loroVersion = newDoc.version().encode();
             console.log('6');
-
-            localSnapshotEncryptedHex = bytesToHex(syncedSnapshotEncryptedBytes);
-            console.log('7');
         } else {
+            const key = hexToBytes(DUMMY_ENC_KEY);
+            const chacha = managedNonce(xchacha20poly1305)(key);
+
+            const localSnapshot = chacha.decrypt(localNote.snapshot);
+            const newDoc = LoroDoc.fromSnapshot(localSnapshot);
+            newDoc.setPeerId(localNote.peerId);
+            if (localNote.updates) {
+                const localUpdates = chacha.decrypt(localNote.updates);
+                newDoc.import(localUpdates);
+            }
+            const syncedSnapshot = newDoc.export({ mode: 'snapshot' });
+            const syncedSnapshotEncrypted = chacha.encrypt(syncedSnapshot);
+
+            localNote.snapshot = syncedSnapshotEncrypted;
             localNote.version += 1;
+            localNote.loroVersion = newDoc.version().encode();
         }
 
         const res = await $fetch('@patch/notes/:noteId', {
@@ -74,12 +85,13 @@ const Navbar: Component = () => {
                 'content-type': 'application/json',
             },
             body: {
-                content: localSnapshotEncryptedHex,
+                content: bytesToHex(localNote.snapshot),
             },
         });
 
         if (!res.error) {
             localNote.synced = true;
+            delete localNote.updates;
             setNote(noteId, localNote).then(() => {
                 note.setIsNoteUpdated(true);
             });

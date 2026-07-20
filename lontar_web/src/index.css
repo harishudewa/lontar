@@ -27,7 +27,7 @@
         }
 
         blockquote {
-            @apply bg-violet-100 p-2 rounded-r-md border-l-4 border-violet-500 my-2;
+            @apply bg-violet-950 p-2 rounded-r-md border-l-4 border-violet-500 my-2 italic;
         }
 
         p {
