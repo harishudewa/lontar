@@ -1,8 +1,9 @@
 import { createFetch, createSchema } from '@better-fetch/fetch';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
-import { LoroDoc, LoroText } from 'loro-crdt';
+import { LoroDoc, LoroText, TreeID, VersionVector } from 'loro-crdt';
 import * as v from 'valibot';
+import { getMetadata, setMetadata } from './db';
 
 const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
 
@@ -115,37 +116,149 @@ export const decrypt = (val: Uint8Array) => {
     return decrypted;
 };
 
-export type CreateNoteMetadataParams = CreateNoteMetadataParamsV1;
-export type CreateNoteMetadataParamsV1 = {
-    data: {
-        title: string;
-    };
-    version: 1;
+export type UpdateNoteMetadataParams = {
+    noteId: string;
+    title: string;
 };
 
-export const createNoteMetadata = (params: CreateNoteMetadataParams) => {
-    const doc = new LoroDoc();
-    const metadata = doc.getMap('note_metadata');
+export const updateNoteMetadata = async (params: UpdateNoteMetadataParams) => {
+    const v: Record<string, any> = {};
 
-    if (params.version === 1) {
-        const title = metadata.setContainer('title', new LoroText());
-        title.insert(0, params.data.title);
+    const notesMetadataCaptured = await getMetadata('notes');
+
+    let notesMetadata: LoroDoc;
+    if (!notesMetadataCaptured) {
+        notesMetadata = new LoroDoc();
+        v.snapshot = encrypt(notesMetadata.export({ mode: 'snapshot' }));
+        v.version = notesMetadata.version().encode();
+    } else {
+        v.snapshot = notesMetadataCaptured.snapshot;
+        v.version = notesMetadataCaptured.version;
+
+        const snapshotBytes = decrypt(notesMetadataCaptured.snapshot);
+        const updatesBytes = decrypt(notesMetadataCaptured.updates);
+        notesMetadata = LoroDoc.fromSnapshot(snapshotBytes);
+        notesMetadata.import(updatesBytes);
     }
 
-    return doc;
+    const notesMetadataMap = notesMetadata.getMap('note_metadata');
+    const noteMetadata = notesMetadataMap.ensureMergeableMap(params.noteId);
+    const title = noteMetadata.setContainer('title', new LoroText());
+    title.insert(0, params.title);
+
+    const updates = notesMetadata.export({ mode: 'update', from: VersionVector.decode(v.version) });
+    v.updates = encrypt(updates);
+
+    await setMetadata('notes', v);
 };
 
-export const initializeMetadata = () => {
-    const doc = new LoroDoc();
-    const metadata = doc.getMap('metadata');
+export type UpdatePathMetadataParams =
+    | UpdatePathMetadataInitialize
+    | UpdatePathMetadataCreateNote
+    | UpdatePathMetadataDeleteNote
+    | UpdatePathMetadataCreateFolder
+    | UpdatePathMetadataDeleteFolder;
 
-    // Paths
-    const paths = metadata.ensureMergeableMap('paths');
-    const rootDir = paths.ensureMergeableMap('/');
-    rootDir.ensureMergeableList('notes');
+export type UpdatePathMetadataInitialize = {
+    operationType: 'init';
+};
 
-    // Note metadata
-    metadata.ensureMergeableMap('note_metadata');
+export type UpdatePathMetadataCreateNote = {
+    operationType: 'createNote';
+    directParentFolderId: TreeID;
+    noteId: string;
+};
 
-    return doc;
+export type UpdatePathMetadataDeleteNote = {
+    operationType: 'deleteNote';
+    directParentFolderId: TreeID;
+    noteId: string;
+};
+
+export type UpdatePathMetadataCreateFolder = {
+    operationType: 'createFolder';
+    directParentFolderId: TreeID;
+    name: string;
+};
+
+export type UpdatePathMetadataDeleteFolder = {
+    operationType: 'deleteFolder';
+    folderId: TreeID;
+};
+
+export const updatePathMetadata = async (params: UpdatePathMetadataParams) => {
+    const v: Record<string, any> = {};
+
+    const pathsMetadataCaptured = await getMetadata('paths');
+
+    let pathsMetadata: LoroDoc;
+    if (!pathsMetadataCaptured) {
+        pathsMetadata = new LoroDoc();
+        const rootNode = pathsMetadata.getTree('path_tree').createNode();
+        rootNode.data.set('name', '/');
+        v.snapshot = encrypt(pathsMetadata.export({ mode: 'snapshot' }));
+        v.version = pathsMetadata.version().encode();
+    } else {
+        v.snapshot = pathsMetadataCaptured.snapshot;
+        v.version = pathsMetadataCaptured.version;
+
+        const snapshotBytes = decrypt(pathsMetadataCaptured.snapshot);
+        const updatesBytes = decrypt(pathsMetadataCaptured.updates);
+        pathsMetadata = LoroDoc.fromSnapshot(snapshotBytes);
+        pathsMetadata.import(updatesBytes);
+    }
+
+    const pathTree = pathsMetadata.getTree('path_tree');
+
+    switch (params.operationType) {
+        case 'init': {
+            break;
+        }
+        case 'createNote': {
+            const parentFolderNode = pathTree.getNodeByID(params.directParentFolderId);
+            if (!parentFolderNode) {
+                console.error('invalid parent folder id');
+                return;
+            }
+            const notes = parentFolderNode.data.ensureMergeableList('notes');
+            const notes_index = parentFolderNode.data.ensureMergeableMap('notes_index');
+            notes_index.set(params.noteId, notes.length);
+            notes.insert(notes.length, params.noteId);
+            break;
+        }
+        case 'deleteNote': {
+            const parentFolderNode = pathTree.getNodeByID(params.directParentFolderId);
+            if (!parentFolderNode) {
+                console.error('invalid parent folder id');
+                return;
+            }
+            const notes = parentFolderNode.data.ensureMergeableList('notes');
+            const notesIndex = parentFolderNode.data.ensureMergeableMap('notes_index');
+            const deletedNoteIndex = notesIndex.get(params.noteId) as number;
+            notes.delete(deletedNoteIndex, 1);
+            break;
+        }
+        case 'createFolder': {
+            const parentFolderNode = pathTree.getNodeByID(params.directParentFolderId);
+            if (!parentFolderNode) {
+                console.error('invalid parent folder id');
+                return;
+            }
+
+            // TODO: maybe need to check folder name alr exists?
+
+            const newFolderNode = parentFolderNode.createNode();
+            newFolderNode.data.set('name', `/${params.name}`);
+            break;
+        }
+        case 'deleteFolder': {
+            pathTree.delete(params.folderId);
+            break;
+        }
+    }
+
+    const updates = pathsMetadata.export({ mode: 'update', from: VersionVector.decode(v.version) });
+    v.updates = encrypt(updates);
+
+    await setMetadata('paths', v);
 };

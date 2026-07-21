@@ -43,5 +43,5 @@ export const setMetadata = async (metadataId: string, value: Record<string, any>
 
 export const getMetadata = async (metadataId: string) => {
     const db = await getDB();
-    return db.get('lontar_db_metadata_store', metadataId) as Promise<Record<string, any>>;
+    return db.get('lontar_db_metadata_store', metadataId) as Promise<Record<string, any> | undefined>;
 };

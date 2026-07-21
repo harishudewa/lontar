@@ -1,5 +1,10 @@
 ## Design
 
+The app will be local first app.
+
+All created folders/notes will first created locally.
+It will stay local unless we sync it.
+
 ```json
 {
     "paths": {

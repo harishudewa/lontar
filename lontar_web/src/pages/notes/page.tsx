@@ -1,27 +1,31 @@
-import { Component, Show } from 'solid-js';
+import { Component } from 'solid-js';
 import AuthGuard from '../auth_guard';
 import { createForm, Field, Form, SubmitHandler } from '@formisch/solid';
 import * as v from 'valibot';
 import { TextInput } from '../components/TextInput';
-import { $fetch, createNoteMetadata, encrypt } from '../../lib/util';
-import { bytesToHex } from '@noble/ciphers/utils.js';
-import { useNote } from './note-provider';
+import { v7 as uuidv7 } from 'uuid';
+import { updateNoteMetadata, updatePathMetadata } from '../../lib/util';
+import { TreeID } from 'loro-crdt';
+import { getMetadata } from '../../lib/db';
 
 const CreateNoteSchema = v.object({
     title: v.pipe(v.string(), v.nonEmpty('Please enter note title')),
+    folderId: v.custom<TreeID>((input) => (typeof input === 'string' ? true : false)),
 });
 
 const NotesPage: Component = () => {
-    const noteCtx = useNote();
+    getMetadata('paths').then((metadata) => {
+        if (!metadata) {
+            updatePathMetadata({ operationType: 'init' });
+        }
+    });
+
     return (
         <AuthGuard>
             <div class="flex-1 flex flex-col items-center justify-center w-full min-h-screen">
                 <div class="flex flex-col gap-4 w-full max-w-sm ">
                     <p>Create Note</p>
                     <CreateNoteForm />
-                    <Show when={noteCtx.isLoadingMetadata()}>
-                        <p>Loading....</p>
-                    </Show>
                 </div>
             </div>
         </AuthGuard>
@@ -34,24 +38,9 @@ const CreateNoteForm = () => {
     });
 
     const submitCreateNoteForm: SubmitHandler<typeof CreateNoteSchema> = async (values) => {
-        const noteMetadata = createNoteMetadata({
-            data: {
-                title: values.title,
-            },
-            version: 1,
-        }).export({ mode: 'snapshot' });
-
-        const noteMetadataEnc = encrypt(noteMetadata);
-        const noteMetadataEncHex = bytesToHex(noteMetadataEnc);
-        const res = await $fetch('@post/notes', {
-            headers: {
-                'content-type': 'application/json',
-            },
-            body: {
-                metadata: noteMetadataEncHex,
-            },
-        });
-        console.log(res);
+        const noteId = uuidv7();
+        updateNoteMetadata({ noteId, title: values.title });
+        updatePathMetadata({ operationType: 'createNote', directParentFolderId: `1@1`, noteId });
     };
 
     return (
