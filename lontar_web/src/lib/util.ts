@@ -1,11 +1,17 @@
 import { createFetch, createSchema } from '@better-fetch/fetch';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
-import { LoroDoc, LoroText, LoroTreeNode, TreeID, VersionVector } from 'loro-crdt';
+import { LoroDoc, LoroMap, LoroText, LoroTreeNode, TreeID, VersionVector } from 'loro-crdt';
 import * as v from 'valibot';
 import { getMetadata, setMetadata } from './db';
+import { type ClassValue, clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 
 const DUMMY_ENC_KEY = '8f55f2228b2926d1af83e4deb97c8532a579314f2bdd937aed972f0fe87e01af';
+
+export function cn(...inputs: ClassValue[]) {
+    return twMerge(clsx(inputs));
+}
 
 export const getCookie = (key: string) => {
     return document.cookie
@@ -286,35 +292,83 @@ const refreshAllDirs = async (pathsMetadataCaptured: Record<string, any>) => {
         pathsMetadata.import(updatesBytes);
     }
 
+    const notesMetadataEncrypted = await getMetadata('notes');
+    let notesMetadata: LoroMap | undefined = undefined;
+    if (notesMetadataEncrypted) {
+        const notesSnapshotBytes = decrypt(notesMetadataEncrypted.snapshot);
+        const notesMetadataDoc = LoroDoc.fromSnapshot(notesSnapshotBytes);
+        if (notesMetadataEncrypted.updates) {
+            const updatesBytes = decrypt(notesMetadataEncrypted.updates);
+            notesMetadataDoc.import(updatesBytes);
+        }
+        notesMetadata = notesMetadataDoc.getMap('note_metadata');
+    }
+
     const pathsDisplayIndex = (await getMetadata('paths_display'))?.index || {};
     const pathTree = pathsMetadata.getTree('path_tree');
     const rootNode = pathTree.getNodes()[0];
-    const res = dfsDirs(rootNode, 0, '', pathsDisplayIndex);
+    const res = dfsDirs(rootNode, 0, '', pathsDisplayIndex, notesMetadata);
 
     return res;
 };
 
-const dfsDirs = (node: LoroTreeNode, depth: number, prevPath: string, pathsDisplayIndex: Record<string, any>) => {
+const dfsDirs = (
+    node: LoroTreeNode,
+    depth: number,
+    prevPath: string,
+    pathsDisplayIndex: Record<string, any>,
+    notesMetadata?: LoroMap
+) => {
     const folderName = node.data.get('name') as string;
     const fullPath = `${prevPath}${folderName}`;
+    const prevIsOpen = pathsDisplayIndex[node.id]?.isOpen;
+    const prevIsShow = pathsDisplayIndex[node.id]?.isShow;
+    let parentIsOpen = true;
+    if (prevIsOpen === undefined) {
+        const parent = node.parent();
+        parentIsOpen = parent ? pathsDisplayIndex[parent.id].isOpen : true;
+    }
     const rootInfo: Record<string, any> = {
         name: folderName,
         nodeId: node.id,
         depth,
         fullPath: fullPath,
-        isOpen: pathsDisplayIndex[node.id]?.isOpen || true,
-        isShow: pathsDisplayIndex[node.id]?.isShow || true,
+        isOpen: prevIsOpen === undefined ? true : prevIsOpen,
+        isShow: prevIsShow === undefined ? parentIsOpen : prevIsShow,
     };
     let pathsIndex = { [node.id]: rootInfo };
     let childsInfo: Record<string, any>[] = [];
 
     node.children()?.forEach((c) => {
-        const { infos, index } = dfsDirs(c, depth + 1, fullPath === '/' ? '' : fullPath, pathsDisplayIndex);
+        const { infos, index } = dfsDirs(
+            c,
+            depth + 1,
+            fullPath === '/' ? '' : fullPath,
+            pathsDisplayIndex,
+            notesMetadata
+        );
         childsInfo = childsInfo.concat(infos);
         pathsIndex = { ...index, ...pathsIndex };
     });
 
     childsInfo.unshift(rootInfo);
+    node.data
+        .ensureMergeableList('notes')
+        .toArray()
+        .forEach((note) => {
+            if (notesMetadata) {
+                const titleContainer = notesMetadata.ensureMergeableMap(note as string).get('title');
+                if (titleContainer) {
+                    childsInfo.push({
+                        noteId: note,
+                        title: (titleContainer as LoroText).toString(),
+                        depth: depth + 1,
+                        fullPath,
+                        isShow: rootInfo.isOpen,
+                    });
+                }
+            }
+        });
     return { infos: childsInfo, index: pathsIndex };
 };
 
