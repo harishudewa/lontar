@@ -1,7 +1,7 @@
 import { createFetch, createSchema } from '@better-fetch/fetch';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hexToBytes, managedNonce } from '@noble/ciphers/utils.js';
-import { LoroDoc, LoroText, TreeID, VersionVector } from 'loro-crdt';
+import { LoroDoc, LoroText, LoroTreeNode, TreeID, VersionVector } from 'loro-crdt';
 import * as v from 'valibot';
 import { getMetadata, setMetadata } from './db';
 
@@ -136,9 +136,11 @@ export const updateNoteMetadata = async (params: UpdateNoteMetadataParams) => {
         v.version = notesMetadataCaptured.version;
 
         const snapshotBytes = decrypt(notesMetadataCaptured.snapshot);
-        const updatesBytes = decrypt(notesMetadataCaptured.updates);
         notesMetadata = LoroDoc.fromSnapshot(snapshotBytes);
-        notesMetadata.import(updatesBytes);
+        if (notesMetadataCaptured.updates) {
+            const updatesBytes = decrypt(notesMetadataCaptured.updates);
+            notesMetadata.import(updatesBytes);
+        }
     }
 
     const notesMetadataMap = notesMetadata.getMap('note_metadata');
@@ -203,9 +205,11 @@ export const updatePathMetadata = async (params: UpdatePathMetadataParams) => {
         v.version = pathsMetadataCaptured.version;
 
         const snapshotBytes = decrypt(pathsMetadataCaptured.snapshot);
-        const updatesBytes = decrypt(pathsMetadataCaptured.updates);
         pathsMetadata = LoroDoc.fromSnapshot(snapshotBytes);
-        pathsMetadata.import(updatesBytes);
+        if (pathsMetadataCaptured.updates) {
+            const updatesBytes = decrypt(pathsMetadataCaptured.updates);
+            pathsMetadata.import(updatesBytes);
+        }
     }
 
     const pathTree = pathsMetadata.getTree('path_tree');
@@ -260,5 +264,81 @@ export const updatePathMetadata = async (params: UpdatePathMetadataParams) => {
     const updates = pathsMetadata.export({ mode: 'update', from: VersionVector.decode(v.version) });
     v.updates = encrypt(updates);
 
+    const { infos, index } = await refreshAllDirs(v);
     await setMetadata('paths', v);
+    await setMetadata('paths_display', { metadata: infos, index });
+    return infos;
+};
+
+export const getAllDirs = async () => {
+    let pathsDisplayMetadata = (await getMetadata('paths_display'))?.metadata as Record<string, any>[];
+    if (!pathsDisplayMetadata) {
+        return await updatePathMetadata({ operationType: 'init' });
+    }
+    return pathsDisplayMetadata;
+};
+
+const refreshAllDirs = async (pathsMetadataCaptured: Record<string, any>) => {
+    const snapshotBytes = decrypt(pathsMetadataCaptured.snapshot);
+    const pathsMetadata = LoroDoc.fromSnapshot(snapshotBytes);
+    if (pathsMetadataCaptured.updates) {
+        const updatesBytes = decrypt(pathsMetadataCaptured.updates);
+        pathsMetadata.import(updatesBytes);
+    }
+
+    const pathsDisplayIndex = (await getMetadata('paths_display'))?.index || {};
+    const pathTree = pathsMetadata.getTree('path_tree');
+    const rootNode = pathTree.getNodes()[0];
+    const res = dfsDirs(rootNode, 0, '', pathsDisplayIndex);
+
+    return res;
+};
+
+const dfsDirs = (node: LoroTreeNode, depth: number, prevPath: string, pathsDisplayIndex: Record<string, any>) => {
+    const folderName = node.data.get('name') as string;
+    const fullPath = `${prevPath}${folderName}`;
+    const rootInfo: Record<string, any> = {
+        name: folderName,
+        nodeId: node.id,
+        depth,
+        fullPath: fullPath,
+        isOpen: pathsDisplayIndex[node.id]?.isOpen || true,
+        isShow: pathsDisplayIndex[node.id]?.isShow || true,
+    };
+    let pathsIndex = { [node.id]: rootInfo };
+    let childsInfo: Record<string, any>[] = [];
+
+    node.children()?.forEach((c) => {
+        const { infos, index } = dfsDirs(c, depth + 1, fullPath === '/' ? '' : fullPath, pathsDisplayIndex);
+        childsInfo = childsInfo.concat(infos);
+        pathsIndex = { ...index, ...pathsIndex };
+    });
+
+    childsInfo.unshift(rootInfo);
+    return { infos: childsInfo, index: pathsIndex };
+};
+
+export const foldFolder = async (index: number) => {
+    const m = await getMetadata('paths_display');
+    const pathsDisplayMetadata = m?.metadata;
+    const indexes = m?.index;
+    if (!pathsDisplayMetadata) return;
+
+    const refDepth = pathsDisplayMetadata[index].depth;
+    pathsDisplayMetadata[index].isOpen = !pathsDisplayMetadata[index].isOpen;
+    const parentFold: Record<number, boolean> = {
+        [refDepth]: pathsDisplayMetadata[index].isOpen,
+    };
+    indexes[pathsDisplayMetadata[index].nodeId] = pathsDisplayMetadata[index];
+
+    for (let i = index + 1; i < pathsDisplayMetadata.length; i++) {
+        if (pathsDisplayMetadata[i].depth <= refDepth) {
+            break;
+        }
+        pathsDisplayMetadata[i].isShow = parentFold[pathsDisplayMetadata[i].depth - 1];
+        parentFold[pathsDisplayMetadata[i].depth] = pathsDisplayMetadata[i].isOpen && pathsDisplayMetadata[i].isShow;
+        indexes[pathsDisplayMetadata[i].nodeId] = pathsDisplayMetadata[i];
+    }
+
+    await setMetadata('paths_display', { metadata: pathsDisplayMetadata, index: indexes });
 };
